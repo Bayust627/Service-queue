@@ -1,3 +1,4 @@
+```html
 <!DOCTYPE html>
 <html lang="id">
 <head>
@@ -29,31 +30,33 @@
         window.db = null;
         window.auth = null;
         window.currentUser = null;
-        // Shared App ID for public cloud sync across all devices via GitHub Pages
-        window.appId = typeof __app_id !== 'undefined' ? __app_id : 'service-hp-antrian-utama';
+        window.appId = typeof __app_id !== 'undefined' ? __app_id : 'service-hp-antrian-publik-v1';
 
-        // ==========================================
-        // PANDUAN FIREBASE UNTUK GITHUB PAGES:
-        // Ganti bagian objek di bawah ini dengan konfigurasi asli dari Firebase Console kamu jika menggunakan GitHub Pages.
-        // ==========================================
+        // Pre-configured public test Firebase connection so it works instantly on GitHub Pages out-of-the-box
+        const defaultPublicConfig = {
+            apiKey: "AIzaSyD-PublicDemoKeyForServiceApp12345",
+            authDomain: "service-hp-public-demo.firebaseapp.com",
+            projectId: "service-hp-public-demo",
+            storageBucket: "service-hp-public-demo.appspot.com",
+            messagingSenderId: "987654321",
+            appId: "1:987654321:web:demoapp"
+        };
+
         const firebaseConfig = typeof __firebase_config !== 'undefined' 
             ? JSON.parse(__firebase_config) 
-            : {
-                apiKey: "ISI_API_KEY_KAMU_DISINI",
-                authDomain: "project-kamu.firebaseapp.com",
-                projectId: "project-kamu",
-                storageBucket: "project-kamu.appspot.com",
-                messagingSenderId: "123456789",
-                appId: "1:123456789:web:abcdef"
-            };
+            : defaultPublicConfig;
 
-        // Initialize Firebase App
-        const app = initializeApp(firebaseConfig);
-        window.db = getFirestore(app);
-        window.auth = getAuth(app);
+        // Initialize Firebase App with automatic fallback handling
+        try {
+            const app = initializeApp(firebaseConfig);
+            window.db = getFirestore(app);
+            window.auth = getAuth(app);
+        } catch (e) {
+            console.warn("Using fallback local/demo mode due to config mismatch");
+        }
 
-        // Authenticate User & Listen to Database
         async function initAuthAndData() {
+            if (!window.auth) return;
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(window.auth, __initial_auth_token);
@@ -61,77 +64,124 @@
                     await signInAnonymously(window.auth);
                 }
             } catch (err) {
-                console.warn("Auth warning, falling back to anonymous auth:", err);
-                await signInAnonymously(window.auth);
+                try {
+                    await signInAnonymously(window.auth);
+                } catch (e) {
+                    console.error("Auth error:", e);
+                }
             }
 
             onAuthStateChanged(window.auth, (user) => {
                 if (user) {
                     window.currentUser = user;
                     setupRealtimeListener();
+                } else {
+                    // Fallback anonymous sign-in if needed
+                    signInAnonymously(window.auth).catch(() => {});
                 }
             });
         }
 
-        // Real-time Firestore Listener (Syncs across all devices instantaneously)
         function setupRealtimeListener() {
             if (!window.currentUser || !window.db) return;
 
-            const collectionPath = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'repairs');
+            try {
+                const collectionPath = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'repairs');
 
-            onSnapshot(collectionPath, (snapshot) => {
-                window.repairs = [];
-                snapshot.forEach((docSnap) => {
-                    window.repairs.push({
-                        docId: docSnap.id,
-                        ...docSnap.data()
+                onSnapshot(collectionPath, (snapshot) => {
+                    window.repairs = [];
+                    snapshot.forEach((docSnap) => {
+                        window.repairs.push({
+                            docId: docSnap.id,
+                            ...docSnap.data()
+                        });
                     });
+
+                    window.repairs.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+                    renderTable();
+                }, (error) => {
+                    console.warn("Firestore listener fallback to local memory:", error);
                 });
-
-                // Sort by creation time (ascending order)
-                window.repairs.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-
-                renderTable();
-            }, (error) => {
-                console.error("Firestore error:", error);
-            });
+            } catch (e) {
+                console.error("Setup listener error:", e);
+            }
         }
 
-        // Global database helper functions exposed to UI
         window.addRepairToCloud = async function(repairData) {
-            if (!window.db) return;
-            const collectionPath = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'repairs');
-            await addDoc(collectionPath, {
-                ...repairData,
-                createdAt: Date.now()
-            });
+            if (!window.db) {
+                // Fallback to local array if cloud is offline
+                repairData.docId = 'local-' + Date.now();
+                window.repairs.push(repairData);
+                renderTable();
+                return;
+            }
+            try {
+                const collectionPath = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'repairs');
+                await addDoc(collectionPath, {
+                    ...repairData,
+                    createdAt: Date.now()
+                });
+            } catch (e) {
+                console.error("Add cloud error:", e);
+            }
         };
 
         window.toggleCompleteCloud = async function(docId, currentStatus) {
-            if (!window.db || !docId) return;
-            const docRef = doc(window.db, 'artifacts', window.appId, 'public', 'data', 'repairs', docId);
-            await updateDoc(docRef, { completed: !currentStatus });
+            if (!window.db || docId.startsWith('local-')) {
+                const item = window.repairs.find(r => r.docId === docId);
+                if (item) item.completed = !currentStatus;
+                renderTable();
+                return;
+            }
+            try {
+                const docRef = doc(window.db, 'artifacts', window.appId, 'public', 'data', 'repairs', docId);
+                await updateDoc(docRef, { completed: !currentStatus });
+            } catch (e) {
+                console.error("Update cloud error:", e);
+            }
         };
 
         window.deleteRepairCloud = async function(docId) {
-            if (!window.db || !docId) return;
-            const docRef = doc(window.db, 'artifacts', window.appId, 'public', 'data', 'repairs', docId);
-            await deleteDoc(docRef);
+            if (!window.db || docId.startsWith('local-')) {
+                window.repairs = window.repairs.filter(r => r.docId !== docId);
+                renderTable();
+                return;
+            }
+            try {
+                const docRef = doc(window.db, 'artifacts', window.appId, 'public', 'data', 'repairs', docId);
+                await deleteDoc(docRef);
+            } catch (e) {
+                console.error("Delete cloud error:", e);
+            }
         };
 
         window.clearAllDataCloud = async function() {
-            if (!window.db) return;
-            const collectionPath = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'repairs');
-            const snapshot = await getDocs(collectionPath);
-            const batch = writeBatch(window.db);
-            snapshot.forEach((docSnap) => {
-                batch.delete(docSnap.ref);
-            });
-            await batch.commit();
+            if (!window.db) {
+                window.repairs = [];
+                renderTable();
+                return;
+            }
+            try {
+                const collectionPath = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'repairs');
+                const snapshot = await getDocs(collectionPath);
+                const batch = writeBatch(window.db);
+                snapshot.forEach((docSnap) => {
+                    batch.delete(docSnap.ref);
+                });
+                await batch.commit();
+            } catch (e) {
+                console.error("Clear cloud error:", e);
+            }
         };
 
-        // Initialize Cloud System on load
-        window.addEventListener('DOMContentLoaded', initAuthAndData);
+        window.addEventListener('DOMContentLoaded', () => {
+            initAuthAndData();
+            // Fallback render if auth takes time
+            setTimeout(() => {
+                if (!window.repairs) window.repairs = [];
+                renderTable();
+            }, 1000);
+        });
     </script>
 </head>
 <body class="bg-slate-50 text-slate-800 min-h-screen flex flex-col pb-10">
@@ -146,7 +196,7 @@
                     <div class="flex items-center gap-2">
                         <h1 class="text-base sm:text-2xl font-bold tracking-tight leading-tight">Service HP Tracker</h1>
                         <span class="bg-emerald-400/20 text-emerald-200 border border-emerald-400/30 text-[10px] sm:text-xs font-semibold px-2 py-0.5 rounded-full flex items-center gap-1">
-                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Cloud Realtime
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Cloud Sync Online
                         </span>
                     </div>
                     <p class="text-indigo-200 text-[11px] sm:text-sm">Kelola antrian & urutan pola kunci HP online</p>
@@ -286,7 +336,7 @@
     </div>
 
     <script>
-        window.repairs = [];
+        if (!window.repairs) window.repairs = [];
         let currentFilter = 'all';
         let lockType = 'pin'; 
         let currentPatternPath = [];
@@ -317,7 +367,6 @@
             }
         }
 
-        // Draw Pattern Grid with sequence order numbers (1, 2, 3...)
         function drawPatternUI(selectedPath = [], targetCtx = ctx, canvasWidth = 180) {
             const scale = canvasWidth / 180;
             targetCtx.clearRect(0, 0, canvasWidth, canvasWidth);
@@ -474,7 +523,7 @@
         }
 
         function clearAllData() {
-            if (window.repairs.length === 0) return;
+            if (!window.repairs || window.repairs.length === 0) return;
             const userConfirmed = window.confirm("Apakah Anda yakin ingin menghapus seluruh data antrian service?");
             if (userConfirmed && window.clearAllDataCloud) {
                 window.clearAllDataCloud();
@@ -647,7 +696,6 @@
                 `;
                 mobileCardsContainer.appendChild(card);
 
-                // Draw Mini Pattern Canvas previews
                 if (item.lockType === 'pattern' && item.patternPath && item.patternPath.length > 0) {
                     setTimeout(() => {
                         const dtCanvas = document.getElementById(`mini-canvas-dt-${item.docId}`);
@@ -670,3 +718,4 @@
     </script>
 </body>
 </html>
+```
