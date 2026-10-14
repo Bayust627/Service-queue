@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Antrian Service HP - Kasir & Teknisi Cloud</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .pattern-dot { transition: transform 0.15s ease, background-color 0.15s ease; }
+        .pattern-dot.active { transform: scale(1.3); }
+        @media (max-width: 640px) {
+            .mobile-card-grid {
+                display: flex;
+                flex-direction: column;
+                gap: 0.75rem;
+            }
+        }
+    </style>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global state for Cloud Sync
+        window.db = null;
+        window.auth = null;
+        window.currentUser = null;
+        // Shared App ID for public cloud sync across all devices via GitHub Pages
+        window.appId = typeof __app_id !== 'undefined' ? __app_id : 'service-hp-antrian-utama';
+
+        // ==========================================
+        // PANDUAN FIREBASE UNTUK GITHUB PAGES:
+        // Ganti bagian objek di bawah ini dengan konfigurasi asli dari Firebase Console kamu jika menggunakan GitHub Pages.
+        // ==========================================
+        const firebaseConfig = typeof __firebase_config !== 'undefined' 
+            ? JSON.parse(__firebase_config) 
+            : {
+                apiKey: "ISI_API_KEY_KAMU_DISINI",
+                authDomain: "project-kamu.firebaseapp.com",
+                projectId: "project-kamu",
+                storageBucket: "project-kamu.appspot.com",
+                messagingSenderId: "123456789",
+                appId: "1:123456789:web:abcdef"
+            };
+
+        // Initialize Firebase App
+        const app = initializeApp(firebaseConfig);
+        window.db = getFirestore(app);
+        window.auth = getAuth(app);
+
+        // Authenticate User & Listen to Database
+        async function initAuthAndData() {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(window.auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(window.auth);
+                }
+            } catch (err) {
+                console.warn("Auth warning, falling back to anonymous auth:", err);
+                await signInAnonymously(window.auth);
+            }
+
+            onAuthStateChanged(window.auth, (user) => {
+                if (user) {
+                    window.currentUser = user;
+                    setupRealtimeListener();
+                }
+            });
+        }
+
+        // Real-time Firestore Listener (Syncs across all devices instantaneously)
+        function setupRealtimeListener() {
+            if (!window.currentUser || !window.db) return;
+
+            const collectionPath = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'repairs');
+
+            onSnapshot(collectionPath, (snapshot) => {
+                window.repairs = [];
+                snapshot.forEach((docSnap) => {
+                    window.repairs.push({
+                        docId: docSnap.id,
+                        ...docSnap.data()
+                    });
+                });
+
+                // Sort by creation time (ascending order)
+                window.repairs.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+
+                renderTable();
+            }, (error) => {
+                console.error("Firestore error:", error);
+            });
+        }
+
+        // Global database helper functions exposed to UI
+        window.addRepairToCloud = async function(repairData) {
+            if (!window.db) return;
+            const collectionPath = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'repairs');
+            await addDoc(collectionPath, {
+                ...repairData,
+                createdAt: Date.now()
+            });
+        };
+
+        window.toggleCompleteCloud = async function(docId, currentStatus) {
+            if (!window.db || !docId) return;
+            const docRef = doc(window.db, 'artifacts', window.appId, 'public', 'data', 'repairs', docId);
+            await updateDoc(docRef, { completed: !currentStatus });
+        };
+
+        window.deleteRepairCloud = async function(docId) {
+            if (!window.db || !docId) return;
+            const docRef = doc(window.db, 'artifacts', window.appId, 'public', 'data', 'repairs', docId);
+            await deleteDoc(docRef);
+        };
+
+        window.clearAllDataCloud = async function() {
+            if (!window.db) return;
+            const collectionPath = collection(window.db, 'artifacts', window.appId, 'public', 'data', 'repairs');
+            const snapshot = await getDocs(collectionPath);
+            const batch = writeBatch(window.db);
+            snapshot.forEach((docSnap) => {
+                batch.delete(docSnap.ref);
+            });
+            await batch.commit();
+        };
+
+        // Initialize Cloud System on load
+        window.addEventListener('DOMContentLoaded', initAuthAndData);
+    </script>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen flex flex-col pb-10">
+
+    <header class="bg-indigo-600 text-white shadow-md sticky top-0 z-30">
+        <div class="max-w-7xl mx-auto px-4 py-3 sm:py-4 flex justify-between items-center gap-2">
+            <div class="flex items-center space-x-2.5 sm:space-x-3">
+                <div class="bg-white/10 p-2 sm:p-2.5 rounded-xl">
+                    <i class="fa-solid fa-mobile-screen-button text-xl sm:text-2xl"></i>
+                </div>
+                <div>
+                    <div class="flex items-center gap-2">
+                        <h1 class="text-base sm:text-2xl font-bold tracking-tight leading-tight">Service HP Tracker</h1>
+                        <span class="bg-emerald-400/20 text-emerald-200 border border-emerald-400/30 text-[10px] sm:text-xs font-semibold px-2 py-0.5 rounded-full flex items-center gap-1">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Cloud Realtime
+                        </span>
+                    </div>
+                    <p class="text-indigo-200 text-[11px] sm:text-sm">Kelola antrian & urutan pola kunci HP online</p>
+                </div>
+            </div>
+            <div id="stats-badge" class="flex items-center gap-2 sm:gap-3 bg-indigo-700/80 px-2.5 py-1.5 sm:px-4 sm:py-2 rounded-xl text-xs sm:text-sm border border-indigo-500/30">
+                <div>Total: <span id="total-count" class="font-bold">0</span></div>
+                <div class="h-3 sm:h-4 w-px bg-indigo-500"></div>
+                <div>Selesai: <span id="done-count" class="font-bold text-emerald-300">0</span></div>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-3 sm:px-6 py-4 sm:py-6 flex-grow w-full grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
+        
+        <!-- Form Section -->
+        <div class="lg:col-span-1 bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200 h-fit lg:sticky lg:top-20">
+            <h2 class="text-base sm:text-lg font-semibold text-slate-900 mb-3 sm:mb-4 flex items-center gap-2">
+                <i class="fa-solid fa-plus-circle text-indigo-600"></i> Tambah Masuk Servis
+            </h2>
+            <form id="repair-form" class="space-y-3 sm:space-y-4">
+                <div>
+                    <label class="block text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">Merk & Tipe HP</label>
+                    <input type="text" id="merk_hp" required placeholder="Contoh: Samsung A51 / iPhone 11" 
+                        class="w-full px-3 py-2 sm:px-3.5 sm:py-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white text-sm transition">
+                </div>
+
+                <div>
+                    <label class="block text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">Jenis Kerusakan</label>
+                    <textarea id="jenis_kerusakan" required rows="2" placeholder="Contoh: Ganti LCD pecah & Baterai ngedrop"
+                        class="w-full px-3 py-2 sm:px-3.5 sm:py-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white text-sm transition resize-none"></textarea>
+                </div>
+
+                <div>
+                    <label class="block text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">Nomor HP Pemilik</label>
+                    <input type="tel" id="no_hp" required placeholder="Contoh: 081234567890" 
+                        class="w-full px-3 py-2 sm:px-3.5 sm:py-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white text-sm transition">
+                </div>
+
+                <!-- Toggle PIN vs Gambar Pola -->
+                <div>
+                    <div class="flex justify-between items-center mb-1.5">
+                        <label class="block text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-slate-600">Keamanan Layar</label>
+                        <div class="flex bg-slate-100 p-0.5 rounded-lg text-xs font-medium">
+                            <button type="button" id="tab-pin" onclick="switchLockType('pin')" class="px-2.5 py-1 rounded-md bg-white text-indigo-600 shadow-xs transition">PIN Teks</button>
+                            <button type="button" id="tab-pattern" onclick="switchLockType('pattern')" class="px-2.5 py-1 rounded-md text-slate-500 hover:text-slate-800 transition">Gambar Pola</button>
+                        </div>
+                    </div>
+
+                    <!-- Input PIN Teks -->
+                    <div id="container-pin">
+                        <input type="text" id="pin_pola" placeholder="Contoh: 1234 atau PIN Layar" 
+                            class="w-full px-3 py-2 sm:px-3.5 sm:py-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white text-sm transition">
+                    </div>
+
+                    <!-- Canvas Gambar Pola 3x3 -->
+                    <div id="container-pattern" class="hidden flex flex-col items-center bg-slate-50 p-3 rounded-xl border border-slate-300">
+                        <p class="text-xs text-slate-500 mb-2">Geser / Hubungkan titik dengan nomor urutan:</p>
+                        <div class="relative w-[180px] h-[180px] touch-none">
+                            <canvas id="pattern-canvas" width="180" height="180" class="absolute top-0 left-0 rounded-xl bg-white shadow-inner cursor-crosshair"></canvas>
+                        </div>
+                        <button type="button" onclick="clearPatternCanvas()" class="mt-2 text-xs text-rose-600 hover:underline flex items-center gap-1">
+                            <i class="fa-solid fa-rotate-left text-[10px]"></i> Reset Pola
+                        </button>
+                    </div>
+                </div>
+
+                <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 px-4 rounded-xl shadow-lg shadow-indigo-600/20 transition active:scale-[0.99] flex items-center justify-center gap-2 text-sm">
+                    <i class="fa-solid fa-arrow-down"></i> Masukkan Antrian
+                </button>
+            </form>
+        </div>
+
+        <div class="lg:col-span-2 space-y-3 sm:space-y-4">
+            <div class="bg-white p-3 sm:p-4 rounded-2xl shadow-sm border border-slate-200 flex flex-col sm:flex-row justify-between items-center gap-2.5">
+                <div class="relative w-full sm:w-72">
+                    <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400">
+                        <i class="fa-solid fa-search text-xs sm:text-sm"></i>
+                    </span>
+                    <input type="text" id="search-input" placeholder="Cari merk atau no HP..." 
+                        class="w-full pl-8 sm:pl-9 pr-3 py-1.5 sm:py-2 bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-xs sm:text-sm">
+                </div>
+                <div class="flex items-center justify-between w-full sm:w-auto gap-1.5">
+                    <div class="flex items-center gap-1.5">
+                        <button id="filter-all" onclick="setFilter('all')" class="px-2.5 py-1 sm:px-3 sm:py-1.5 text-xs font-semibold rounded-lg bg-indigo-600 text-white transition">Semua</button>
+                        <button id="filter-active" onclick="setFilter('active')" class="px-2.5 py-1 sm:px-3 sm:py-1.5 text-xs font-semibold rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition">Proses</button>
+                        <button id="filter-done" onclick="setFilter('done')" class="px-2.5 py-1 sm:px-3 sm:py-1.5 text-xs font-semibold rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition">Selesai</button>
+                    </div>
+                    <button onclick="clearAllData()" class="px-2.5 py-1 sm:px-3 sm:py-1.5 text-xs font-semibold rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-100 transition" title="Hapus Semua Data"><i class="fa-solid fa-trash-can"></i></button>
+                </div>
+            </div>
+
+            <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                <!-- Desktop Table View -->
+                <div class="hidden md:block overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-slate-50 border-b border-slate-200 text-slate-600 text-xs font-bold uppercase tracking-wider">
+                                <th class="py-3 px-3 text-center w-12">No</th>
+                                <th class="py-3 px-4">Merk HP</th>
+                                <th class="py-3 px-4">Jenis Kerusakan</th>
+                                <th class="py-3 px-4">No. HP Pemilik</th>
+                                <th class="py-3 px-4 text-center">PIN / Pola</th>
+                                <th class="py-3 px-4 text-center">Status Selesai</th>
+                                <th class="py-3 px-3 text-center">Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="repair-table-body" class="divide-y divide-slate-100 text-sm">
+                            <!-- Injected via JS -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Mobile Card View -->
+                <div id="repair-mobile-cards" class="md:hidden divide-y divide-slate-100">
+                    <!-- Injected via JS -->
+                </div>
+
+                <div id="empty-state" class="hidden py-10 text-center">
+                    <div class="text-slate-300 text-3xl mb-1"><i class="fa-solid fa-clipboard-list"></i></div>
+                    <p class="text-slate-500 text-xs sm:text-sm">Belum ada antrian servis yang terdaftar.</p>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- Modal Pratinjau Pola -->
+    <div id="pattern-modal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-50 hidden">
+        <div class="bg-white p-5 sm:p-6 rounded-2xl shadow-2xl max-w-xs w-full text-center space-y-4">
+            <h3 class="font-bold text-slate-800 text-sm sm:text-base" id="modal-title">Detail Urutan Pola Kunci</h3>
+            <div class="flex justify-center">
+                <canvas id="modal-canvas" width="200" height="200" class="border rounded-xl bg-slate-50 shadow-inner"></canvas>
+            </div>
+            <button onclick="closeModal()" class="w-full py-2 bg-indigo-600 text-white rounded-xl font-medium text-xs sm:text-sm hover:bg-indigo-700 transition">Tutup</button>
+        </div>
+    </div>
+
+    <script>
+        window.repairs = [];
+        let currentFilter = 'all';
+        let lockType = 'pin'; 
+        let currentPatternPath = [];
+
+        const form = document.getElementById('repair-form');
+        const tableBody = document.getElementById('repair-table-body');
+        const mobileCardsContainer = document.getElementById('repair-mobile-cards');
+        const emptyState = document.getElementById('empty-state');
+        const totalCountEl = document.getElementById('total-count');
+        const doneCountEl = document.getElementById('done-count');
+        const searchInput = document.getElementById('search-input');
+
+        // Pattern Drawing Logic
+        const canvas = document.getElementById('pattern-canvas');
+        const ctx = canvas.getContext('2d');
+        let isDrawing = false;
+
+        const gridPoints = [];
+        const size = 180;
+        const step = size / 4;
+        for (let r = 0; r < 3; r++) {
+            for (let c = 0; c < 3; c++) {
+                gridPoints.push({
+                    id: r * 3 + c,
+                    x: step * (c + 1),
+                    y: step * (r + 1)
+                });
+            }
+        }
+
+        // Draw Pattern Grid with sequence order numbers (1, 2, 3...)
+        function drawPatternUI(selectedPath = [], targetCtx = ctx, canvasWidth = 180) {
+            const scale = canvasWidth / 180;
+            targetCtx.clearRect(0, 0, canvasWidth, canvasWidth);
+
+            if (selectedPath.length > 1) {
+                targetCtx.beginPath();
+                targetCtx.lineWidth = 4 * scale;
+                targetCtx.strokeStyle = '#4f46e5';
+                targetCtx.lineCap = 'round';
+                targetCtx.lineJoin = 'round';
+
+                const firstPt = gridPoints[selectedPath[0]];
+                targetCtx.moveTo(firstPt.x * scale, firstPt.y * scale);
+                for (let i = 1; i < selectedPath.length; i++) {
+                    const pt = gridPoints[selectedPath[i]];
+                    targetCtx.lineTo(pt.x * scale, pt.y * scale);
+                }
+                targetCtx.stroke();
+            }
+
+            gridPoints.forEach(pt => {
+                const indexInPath = selectedPath.indexOf(pt.id);
+                const isSelected = indexInPath !== -1;
+                
+                targetCtx.beginPath();
+                targetCtx.arc(pt.x * scale, pt.y * scale, isSelected ? 12 * scale : 6 * scale, 0, Math.PI * 2);
+                targetCtx.fillStyle = isSelected ? '#4f46e5' : '#cbd5e1';
+                targetCtx.fill();
+
+                if (isSelected) {
+                    targetCtx.beginPath();
+                    targetCtx.arc(pt.x * scale, pt.y * scale, 9 * scale, 0, Math.PI * 2);
+                    targetCtx.fillStyle = '#ffffff';
+                    targetCtx.fill();
+
+                    targetCtx.fillStyle = '#4f46e5';
+                    targetCtx.font = `bold ${10 * scale}px Inter, sans-serif`;
+                    targetCtx.textAlign = 'center';
+                    targetCtx.textBaseline = 'middle';
+                    targetCtx.fillText((indexInPath + 1).toString(), pt.x * scale, pt.y * scale);
+                } else {
+                    targetCtx.beginPath();
+                    targetCtx.arc(pt.x * scale, pt.y * scale, 4 * scale, 0, Math.PI * 2);
+                    targetCtx.fillStyle = '#94a3b8';
+                    targetCtx.fill();
+                }
+            });
+        }
+
+        function getPointFromPos(x, y) {
+            return gridPoints.find(pt => {
+                const dist = Math.hypot(pt.x - x, pt.y - y);
+                return dist < 22;
+            });
+        }
+
+        function handlePointerStart(e) {
+            e.preventDefault();
+            isDrawing = true;
+            currentPatternPath = [];
+            const rect = canvas.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            const pt = getPointFromPos(clientX - rect.left, clientY - rect.top);
+            if (pt) {
+                currentPatternPath.push(pt.id);
+                drawPatternUI(currentPatternPath);
+            }
+        }
+
+        function handlePointerMove(e) {
+            if (!isDrawing) return;
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            const pt = getPointFromPos(clientX - rect.left, clientY - rect.top);
+            if (pt && !currentPatternPath.includes(pt.id)) {
+                currentPatternPath.push(pt.id);
+                drawPatternUI(currentPatternPath);
+            }
+        }
+
+        function handlePointerEnd() {
+            isDrawing = false;
+        }
+
+        canvas.addEventListener('mousedown', handlePointerStart);
+        canvas.addEventListener('mousemove', handlePointerMove);
+        window.addEventListener('mouseup', handlePointerEnd);
+
+        canvas.addEventListener('touchstart', handlePointerStart, { passive: false });
+        canvas.addEventListener('touchmove', handlePointerMove, { passive: false });
+        canvas.addEventListener('touchend', handlePointerEnd);
+
+        function clearPatternCanvas() {
+            currentPatternPath = [];
+            drawPatternUI([]);
+        }
+
+        function switchLockType(type) {
+            lockType = type;
+            const tabPin = document.getElementById('tab-pin');
+            const tabPattern = document.getElementById('tab-pattern');
+            const containerPin = document.getElementById('container-pin');
+            const containerPattern = document.getElementById('container-pattern');
+
+            if (type === 'pin') {
+                tabPin.className = "px-2.5 py-1 rounded-md bg-white text-indigo-600 shadow-xs transition font-semibold";
+                tabPattern.className = "px-2.5 py-1 rounded-md text-slate-500 hover:text-slate-800 transition";
+                containerPin.classList.remove('hidden');
+                containerPattern.classList.add('hidden');
+            } else {
+                tabPattern.className = "px-2.5 py-1 rounded-md bg-white text-indigo-600 shadow-xs transition font-semibold";
+                tabPin.className = "px-2.5 py-1 rounded-md text-slate-500 hover:text-slate-800 transition";
+                containerPattern.classList.remove('hidden');
+                containerPin.classList.add('hidden');
+                drawPatternUI(currentPatternPath);
+            }
+        }
+
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const newRepair = {
+                merk: document.getElementById('merk_hp').value.trim(),
+                kerusakan: document.getElementById('jenis_kerusakan').value.trim(),
+                no_hp: document.getElementById('no_hp').value.trim(),
+                lockType: lockType,
+                pin: document.getElementById('pin_pola').value.trim() || '-',
+                patternPath: [...currentPatternPath],
+                completed: false
+            };
+
+            if (window.addRepairToCloud) {
+                await window.addRepairToCloud(newRepair);
+            }
+
+            form.reset();
+            clearPatternCanvas();
+            switchLockType('pin');
+        });
+
+        function toggleComplete(docId, currentStatus) {
+            if (window.toggleCompleteCloud) {
+                window.toggleCompleteCloud(docId, currentStatus);
+            }
+        }
+
+        function deleteRepair(docId) {
+            if (window.deleteRepairCloud) {
+                window.deleteRepairCloud(docId);
+            }
+        }
+
+        function clearAllData() {
+            if (window.repairs.length === 0) return;
+            const userConfirmed = window.confirm("Apakah Anda yakin ingin menghapus seluruh data antrian service?");
+            if (userConfirmed && window.clearAllDataCloud) {
+                window.clearAllDataCloud();
+            }
+        }
+
+        function setFilter(filter) {
+            currentFilter = filter;
+            ['all', 'active', 'done'].forEach(f => {
+                const btn = document.getElementById(`filter-${f}`);
+                if (f === filter) {
+                    btn.className = "px-2.5 py-1 sm:px-3 sm:py-1.5 text-xs font-semibold rounded-lg bg-indigo-600 text-white transition";
+                } else {
+                    btn.className = "px-2.5 py-1 sm:px-3 sm:py-1.5 text-xs font-semibold rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition";
+                }
+            });
+            renderTable();
+        }
+
+        function openPatternModal(docId) {
+            const item = window.repairs.find(r => r.docId === docId);
+            if (!item || !item.patternPath) return;
+
+            document.getElementById('modal-title').textContent = `Pola HP: ${item.merk}`;
+            const modalCanvas = document.getElementById('modal-canvas');
+            const mCtx = modalCanvas.getContext('2d');
+            drawPatternUI(item.patternPath, mCtx, 200);
+
+            document.getElementById('pattern-modal').classList.remove('hidden');
+        }
+
+        function closeModal() {
+            document.getElementById('pattern-modal').classList.add('hidden');
+        }
+
+        function sendWhatsApp(noHp, merk, isDone) {
+            let cleanNo = noHp.replace(/\D/g, '');
+            if (cleanNo.startsWith('0')) {
+                cleanNo = '62' + cleanNo.slice(1);
+            }
+            let message = isDone 
+                ? `Halo Kak, HP ${merk} miliknya sudah selesai diservis nih di tempat kami. Silakan bisa diambil ya kak, terima kasih!`
+                : `Halo Kak, konfirmasi mengenai servis HP ${merk} saat ini sedang dalam proses pengerjaan teknisi kami ya.`;
+            
+            window.open(`https://wa.me/${cleanNo}?text=${encodeURIComponent(message)}`, '_blank');
+        }
+
+        function renderTable() {
+            const keyword = searchInput.value.toLowerCase();
+            const repairsList = window.repairs || [];
+            
+            let filtered = repairsList.filter(item => {
+                const matchSearch = item.merk.toLowerCase().includes(keyword) || item.no_hp.toLowerCase().includes(keyword);
+                if (currentFilter === 'active') return matchSearch && !item.completed;
+                if (currentFilter === 'done') return matchSearch && item.completed;
+                return matchSearch;
+            });
+
+            totalCountEl.textContent = repairsList.length;
+            doneCountEl.textContent = repairsList.filter(r => r.completed).length;
+
+            if (filtered.length === 0) {
+                tableBody.innerHTML = '';
+                mobileCardsContainer.innerHTML = '';
+                emptyState.classList.remove('hidden');
+                return;
+            }
+
+            emptyState.classList.add('hidden');
+            tableBody.innerHTML = '';
+            mobileCardsContainer.innerHTML = '';
+
+            filtered.forEach((item, index) => {
+                // 1. DESKTOP ROW
+                const tr = document.createElement('tr');
+                tr.className = `border-b border-slate-100 hover:bg-slate-50/80 transition ${item.completed ? 'bg-emerald-50/40 text-slate-400 line-through' : 'text-slate-700'}`;
+                
+                let lockDisplay = '';
+                if (item.lockType === 'pattern' && item.patternPath && item.patternPath.length > 0) {
+                    lockDisplay = `
+                        <div class="flex flex-col items-center justify-center cursor-pointer group" onclick="openPatternModal('${item.docId}')">
+                            <canvas id="mini-canvas-dt-${item.docId}" width="42" height="42" class="border rounded-md bg-white border-slate-200 group-hover:border-indigo-400 transition"></canvas>
+                            <span class="text-[10px] text-indigo-600 font-normal no-underline mt-0.5 group-hover:underline">Lihat Pola</span>
+                        </div>
+                    `;
+                } else {
+                    lockDisplay = `<span class="font-mono text-xs bg-slate-100 px-2 py-1 rounded inline-block">${escapeHtml(item.pin || '-')}</span>`;
+                }
+
+                tr.innerHTML = `
+                    <td class="py-3 px-3 text-center font-semibold text-xs text-slate-500">${index + 1}</td>
+                    <td class="py-3 px-4 font-semibold ${item.completed ? 'text-slate-400' : 'text-slate-900'}">${escapeHtml(item.merk)}</td>
+                    <td class="py-3 px-4">${escapeHtml(item.kerusakan)}</td>
+                    <td class="py-3 px-4 font-mono text-xs">${escapeHtml(item.no_hp)}</td>
+                    <td class="py-3 px-4 text-center">${lockDisplay}</td>
+                    <td class="py-3 px-4 text-center">
+                        <input type="checkbox" ${item.completed ? 'checked' : ''} onclick="toggleComplete('${item.docId}', ${item.completed})"
+                            class="w-5 h-5 accent-indigo-600 rounded cursor-pointer transition">
+                    </td>
+                    <td class="py-3 px-3 text-center">
+                        <div class="flex items-center justify-center gap-2">
+                            <button onclick="sendWhatsApp('${item.no_hp}', '${item.merk}', ${item.completed})" 
+                                class="p-1.5 bg-emerald-50 text-emerald-600 hover:bg-emerald-100 rounded-lg transition" title="Kirim WA">
+                                <i class="fa-brands fa-whatsapp text-base"></i>
+                            </button>
+                            <button onclick="deleteRepair('${item.docId}')" 
+                                class="p-1.5 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-lg transition" title="Hapus Data">
+                                <i class="fa-solid fa-trash text-sm"></i>
+                            </button>
+                        </div>
+                    </td>
+                `;
+                tableBody.appendChild(tr);
+
+                // 2. MOBILE CARD VIEW
+                const card = document.createElement('div');
+                card.className = `p-4 flex flex-col gap-2.5 ${item.completed ? 'bg-emerald-50/30' : 'bg-white'}`;
+
+                let mobileLockDisplay = '';
+                if (item.lockType === 'pattern' && item.patternPath && item.patternPath.length > 0) {
+                    mobileLockDisplay = `
+                        <div class="flex items-center gap-2 cursor-pointer bg-slate-50 p-1.5 rounded-lg border border-slate-200" onclick="openPatternModal('${item.docId}')">
+                            <canvas id="mini-canvas-mb-${item.docId}" width="38" height="38" class="border rounded bg-white"></canvas>
+                            <span class="text-xs text-indigo-600 font-medium">Lihat Pola</span>
+                        </div>
+                    `;
+                } else {
+                    mobileLockDisplay = `<span class="font-mono text-xs bg-slate-100 px-2 py-1 rounded border border-slate-200">${escapeHtml(item.pin || '-')}</span>`;
+                }
+
+                card.innerHTML = `
+                    <div class="flex items-start justify-between gap-2">
+                        <div class="flex items-center gap-2">
+                            <span class="w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 font-bold text-xs flex items-center justify-center shrink-0">
+                                ${index + 1}
+                            </span>
+                            <h3 class="font-bold text-sm ${item.completed ? 'text-slate-400 line-through' : 'text-slate-900'}">
+                                ${escapeHtml(item.merk)}
+                            </h3>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <label class="flex items-center gap-1.5 text-xs text-slate-600 bg-slate-100 px-2 py-1 rounded-lg">
+                                <input type="checkbox" ${item.completed ? 'checked' : ''} onclick="toggleComplete('${item.docId}', ${item.completed})" class="w-4 h-4 accent-indigo-600">
+                                Selesai
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-50 p-2.5 rounded-xl border border-slate-100 text-xs text-slate-700">
+                        <span class="font-semibold text-slate-500 uppercase text-[10px] block mb-0.5">Kerusakan</span>
+                        <p class="${item.completed ? 'line-through text-slate-400' : ''}">${escapeHtml(item.kerusakan)}</p>
+                    </div>
+
+                    <div class="flex items-center justify-between text-xs pt-1 border-t border-slate-100">
+                        <div class="flex flex-col">
+                            <span class="text-[10px] text-slate-400 uppercase font-semibold">Keamanan</span>
+                            <div>${mobileLockDisplay}</div>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button onclick="sendWhatsApp('${item.no_hp}', '${item.merk}', ${item.completed})" 
+                                class="px-2.5 py-1.5 bg-emerald-500 text-white rounded-lg flex items-center gap-1 text-xs font-medium shadow-xs active:scale-95 transition">
+                                <i class="fa-brands fa-whatsapp text-sm"></i> WA
+                            </button>
+                            <button onclick="deleteRepair('${item.docId}')" 
+                                class="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg transition" title="Hapus">
+                                <i class="fa-solid fa-trash-can text-sm"></i>
+                            </button>
+                        </div>
+                    </div>
+                `;
+                mobileCardsContainer.appendChild(card);
+
+                // Draw Mini Pattern Canvas previews
+                if (item.lockType === 'pattern' && item.patternPath && item.patternPath.length > 0) {
+                    setTimeout(() => {
+                        const dtCanvas = document.getElementById(`mini-canvas-dt-${item.docId}`);
+                        if (dtCanvas) drawPatternUI(item.patternPath, dtCanvas.getContext('2d'), 42);
+
+                        const mbCanvas = document.getElementById(`mini-canvas-mb-${item.docId}`);
+                        if (mbCanvas) drawPatternUI(item.patternPath, mbCanvas.getContext('2d'), 38);
+                    }, 0);
+                }
+            });
+        }
+
+        searchInput.addEventListener('input', renderTable);
+
+        function escapeHtml(str) {
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+        }
+
+        drawPatternUI([]);
+    </script>
+</body>
+</html>
